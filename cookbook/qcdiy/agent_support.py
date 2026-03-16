@@ -20,7 +20,7 @@ from agno.vectordb.search import SearchType
 # ---------------------------------------------------------------------------
 OPENROUTER_API_KEY = os.getenv(
 	"OPENROUTER_API_KEY",
-	"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",
+	"",
 )
 OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
 OPENROUTER_CHAT_MODEL = "openai/gpt-4o-mini"
