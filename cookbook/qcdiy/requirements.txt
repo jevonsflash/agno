@@ -474,3 +474,4 @@ yfinance==1.2.0
     # via -r cookbook/00_quickstart/requirements.in
 zipp==3.23.0
     # via importlib-metadata
+openai==2.15.0

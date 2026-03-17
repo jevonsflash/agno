@@ -9,22 +9,22 @@ from urllib.request import Request, urlopen
 
 from agno.agent import Agent
 from agno.db.sqlite import SqliteDb
-from agno.knowledge.embedder.openai import OpenAIEmbedder
 from agno.knowledge.knowledge import Knowledge
 from agno.models.openrouter import OpenRouter
 from agno.vectordb.chroma import ChromaDb
 from agno.vectordb.search import SearchType
+from agno.knowledge.embedder.google import GeminiEmbedder
+from agno.utils.log import set_log_level_to_debug
 
+from agno.utils.log import logger
 # ---------------------------------------------------------------------------
 # OpenRouter and Knowledge Source Config
 # ---------------------------------------------------------------------------
 OPENROUTER_API_KEY = os.getenv(
-	"OPENROUTER_API_KEY",
-	"",
+	"OPENROUTER_API_KEY"
 )
 OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
-OPENROUTER_CHAT_MODEL = "openai/gpt-4o-mini"
-OPENROUTER_EMBEDDING_MODEL = "openai/text-embedding-3-small"
+OPENROUTER_CHAT_MODEL = "google/gemini-3-flash-preview"
 
 GITEE_OWNER = "jevonsflash"
 GITEE_REPO = "v-support"
@@ -48,12 +48,7 @@ knowledge = Knowledge(
 		persistent_client=True,
 		search_type=SearchType.hybrid,
 		hybrid_rrf_k=60,
-		embedder=OpenAIEmbedder(
-			id=OPENROUTER_EMBEDDING_MODEL,
-			api_key=OPENROUTER_API_KEY,
-			base_url=OPENROUTER_BASE_URL,
-			dimensions=1536,
-		),
+		embedder=GeminiEmbedder(id="gemini-embedding-001"),
 	),
 	max_results=5,
 	contents_db=agent_db,
@@ -172,11 +167,13 @@ agent_support = Agent(
 	markdown=True,
 )
 
-
+logger.info("OPENROUTER_API_KEY:", OPENROUTER_API_KEY)
 # ---------------------------------------------------------------------------
 # Run Agent
 # ---------------------------------------------------------------------------
 if __name__ == "__main__":
+	logger.info("OPENROUTER_API_KEY:", OPENROUTER_API_KEY)
+	set_log_level_to_debug()
 	loaded_urls = load_v_support_markdown_knowledge()
 	print(f"Loaded {len(loaded_urls)} markdown files from {GITEE_TREE_URL}")
 
