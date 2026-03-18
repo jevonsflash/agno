@@ -9,22 +9,25 @@ from urllib.request import Request, urlopen
 
 from agno.agent import Agent
 from agno.db.sqlite import SqliteDb
+from agno.knowledge.embedder.openai import OpenAIEmbedder
 from agno.knowledge.knowledge import Knowledge
 from agno.models.openrouter import OpenRouter
 from agno.vectordb.chroma import ChromaDb
 from agno.vectordb.search import SearchType
 from agno.knowledge.embedder.google import GeminiEmbedder
 from agno.utils.log import set_log_level_to_debug
+from agno.models.dashscope import DashScope
 
 from agno.utils.log import logger
 # ---------------------------------------------------------------------------
 # OpenRouter and Knowledge Source Config
 # ---------------------------------------------------------------------------
 OPENROUTER_API_KEY = os.getenv(
-	"OPENROUTER_API_KEY"
+	"DASHSCOPE_API_KEY"
 )
-OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
-OPENROUTER_CHAT_MODEL = "google/gemini-3-flash-preview"
+OPENROUTER_BASE_URL = "https://dashscope.aliyuncs.com/compatible-mode/v1"
+OPENROUTER_CHAT_MODEL = "qwen-plus"
+OPENROUTER_EMBEDDING_MODEL = "text-embedding-v4"
 
 GITEE_OWNER = "jevonsflash"
 GITEE_REPO = "v-support"
@@ -48,7 +51,12 @@ knowledge = Knowledge(
 		persistent_client=True,
 		search_type=SearchType.hybrid,
 		hybrid_rrf_k=60,
-		embedder=GeminiEmbedder(id="gemini-embedding-001"),
+		embedder=OpenAIEmbedder(
+			id=OPENROUTER_EMBEDDING_MODEL,
+			api_key=OPENROUTER_API_KEY,
+			base_url=OPENROUTER_BASE_URL,
+			dimensions=1536,
+		),
 	),
 	max_results=5,
 	contents_db=agent_db,
@@ -116,7 +124,7 @@ def get_markdown_urls_from_gitee(root_path: str = GITEE_KNOWLEDGE_ROOT) -> List[
 
 def load_v_support_markdown_knowledge() -> List[str]:
 	markdown_urls = get_markdown_urls_from_gitee()
-
+	logger.info("markdown_urls", markdown_urls)
 	for md_url in markdown_urls:
 		file_name = Path(urlparse(md_url).path).name
 		knowledge.insert(
@@ -156,7 +164,7 @@ instructions = """\
 # ---------------------------------------------------------------------------
 agent_support = Agent(
 	name="V-Support Agent",
-	model=OpenRouter(id=OPENROUTER_CHAT_MODEL, api_key=OPENROUTER_API_KEY),
+	model=DashScope(id=OPENROUTER_CHAT_MODEL, api_key=OPENROUTER_API_KEY,base_url=OPENROUTER_BASE_URL),
 	instructions=instructions,
 	knowledge=knowledge,
 	search_knowledge=True,
@@ -167,17 +175,10 @@ agent_support = Agent(
 	markdown=True,
 )
 
-logger.info("OPENROUTER_API_KEY:", OPENROUTER_API_KEY)
 # ---------------------------------------------------------------------------
 # Run Agent
 # ---------------------------------------------------------------------------
-if __name__ == "__main__":
-	logger.info("OPENROUTER_API_KEY:", OPENROUTER_API_KEY)
-	set_log_level_to_debug()
-	loaded_urls = load_v_support_markdown_knowledge()
-	print(f"Loaded {len(loaded_urls)} markdown files from {GITEE_TREE_URL}")
 
-	agent_support.print_response(
-		"请总结一下 V-Support 文档里最核心的功能模块和典型使用流程。",
-		stream=True,
-	)
+loaded_urls = load_v_support_markdown_knowledge()
+logger.info(f"Loaded {len(loaded_urls)} markdown files from {GITEE_TREE_URL}")
+
