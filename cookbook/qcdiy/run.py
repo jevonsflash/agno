@@ -25,5 +25,4 @@ app = agent_os.get_app()
 # Run AgentOS
 # ---------------------------------------------------------------------------
 if __name__ == "__main__":
-    agent_support.load_v_support_markdown_knowledge()
     agent_os.serve(app="run:app", reload=True)
