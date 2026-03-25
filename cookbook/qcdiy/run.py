@@ -49,13 +49,8 @@ async def run_agent_po_analysis(payload: RequestBody):  # <- Pydantic 模型
         print("user_id:", payload.user_id)
 
         # 尝试解析 JSON（推荐）
-        result = run_po_analysis(payload.input)
-        result2 = run_product_extraction(payload.input)
-
-
-        data =result.content
-        productInfo = result2.content
-
+        data = run_po_analysis(payload.input)
+        productInfo = run_product_extraction(payload.input)
         return ApiResponse(
             success=True,
             data=data,

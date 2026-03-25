@@ -228,7 +228,7 @@ def run_po_analysis(job: InspectionJobInput):
     )
     print(response.content)
 
-    return response
+    return response.content
 
 # -----------------------------
 # 4. 使用示例

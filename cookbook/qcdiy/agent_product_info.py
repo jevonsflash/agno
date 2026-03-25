@@ -129,7 +129,7 @@ def create_product_agent():
         db=agent_db,
         markdown=False,
         input_schema=InspectionJobInput,
-        output_schema=ProductInfoOutput
+        # output_schema=ProductInfoOutput
     )
 
     return agent, knowledge
@@ -181,7 +181,8 @@ def run_product_extraction(job: InspectionJobInput):
     )
 
     print(response.content)
-    return response
+    product_info_output = ProductInfoOutput.parse_raw(response.content)
+    return product_info_output
 
 
 # ---------------------------------------------------------------------------
