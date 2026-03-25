@@ -1,5 +1,7 @@
-from typing import List, Literal
+from typing import List, Literal, Optional
+import uuid
 from pydantic import BaseModel, Field
+import os
 
 from agno.agent import Agent
 from agno.media import File, Image
@@ -13,8 +15,8 @@ from agno.vectordb.search import SearchType
 from agno.knowledge.embedder.google import GeminiEmbedder
 from agno.utils.log import set_log_level_to_debug
 from agno.models.dashscope import DashScope
-
-
+from agno.knowledge.knowledge import Knowledge
+from model import DocumentRef, ImageRef, InspectionJobInput,InspectionJobOutput
 # ---------------------------------------------------------------------------
 # OpenRouter and Knowledge Source Config
 # ---------------------------------------------------------------------------
@@ -27,53 +29,6 @@ OPENROUTER_EMBEDDING_MODEL = "text-embedding-v4"
 
 
 agent_db = SqliteDb(db_file="tmp/qcdiy_po_analysis.db")
-# -----------------------------
-# 1. 定义结构化输入 schema
-# -----------------------------
-class DocumentRef(BaseModel):
-    url: str
-    mime_type: str = ""
-    logical_name: str = ""
-    doc_type: Literal["PO", "SC", "PI", "OTHER"] = "OTHER"
-
-class ImageRef(BaseModel):
-    url: str
-    usage: str = ""
-
-class InspectionJobInput(BaseModel):
-    job_id: str = Field(..., description="业务任务ID")
-    language: str = Field(default="zh-CN")
-    documents: List[DocumentRef] = Field(default_factory=list)
-    images: List[ImageRef] = Field(default_factory=list)
-
-class InspectionExtractionResult(BaseModel):
-    clientName: str = ""
-    factoryName: str = ""
-    productCateName: str = ""
-    startDate: str = ""
-    endDate: str = ""
-    productNameChs: str = ""
-    poductUses: List[str] = Field(default_factory=list)
-    productPowerSupply: List[str] = Field(default_factory=list)
-    productConnectionType: List[str] = Field(default_factory=list)
-    productMaterials: List[str] = Field(default_factory=list)
-    productIsMailOrder: bool = False
-    shippingDestinationName: str = ""
-    shippingDate: str = ""
-    level: str = ""
-    critical: str = ""
-    major: str = ""
-    minor: str = ""
-    specialOtherComments: List[SpecialOtherComment] = Field(default_factory=list)
-    supplierName: str = ""
-    supplierNameCn: str = ""
-    supplierCountry: str = ""
-    supplierProvince: str = ""
-    supplierCity: str = ""
-    supplierDistrict: str = ""
-    supplierAddress: str = ""
-    supplierContacts: List[SupplierContact] = Field(default_factory=list)
-    supplierMainProduct: List[str] = Field(default_factory=list)
 
 # ---------------------------------------------------------------------------
 # Agent Instructions
@@ -157,116 +112,122 @@ instructions = """\
 2.  **空值**: 如果在文中完全找不到对应信息，且无法根据逻辑推断，请填为空字符串 `""` 或空数组 `[]`，不要填 "N/A" 或 "Unknown"。
 3.  **语言**: `ClientName` 和 `SupplierName` 优先保留文档中的英文原名。`Province/City` 如果在中国，请转换为中文；如果是国外，保留英文。
 
----
+# Extra Instructions for Multimodal Inputs
+- 你可能会同时收到多个 PDF、DOCX、CSV 以及多张图片
+- 请先综合所有输入源，再输出一个统一结果
 
-# JSON Output Structure
-你的输出必须是**一个**严格符合 JSON 语法的对象，并且字段命名使用驼峰命名法，不要包含 markdown 标记。
-
-```json
-{
-  "clientName": "String // 客户名称（英文优先）",
-  "factoryName": "String // 工厂名称（如果与Supplier不同，否则填SupplierName）",
-  "productCateName": "String // 产品大类，如 Furniture, Electronics",
-  "startDate": "YYYY-MM-DD // 检验开始日期（默认船期前5天）",
-  "endDate": "YYYY-MM-DD // 检验结束日期（默认船期前5天）",
-  "productNameChs": "String // 产品中文名（需翻译，如 'Coffee Table' -> '咖啡桌'）",
-  "poductUses": ["String // 枚举: 不适用, 婴幼儿产品, 食品接触, 其他"],
-  "productPowerSupply": ["String // 枚举: 否, 带干电池, 带充电电池, USB供电, 无线充电, 市电供电, 带适配器"],
-  "productConnectionType": ["String // 枚举: 不适用, 蓝牙, WIFI, 带APP, 其他"],
-  "productMaterials": ["String // 枚举: 金属, 木材, 塑料, 玻璃, 纺织品, 陶瓷, 搪瓷, 石材, 橡胶, 纸张, 其他"],
-  "productIsMailOrder": Boolean,
-  "shippingDestinationName": "String // 目的国 (如 Germany, USA)",
-  "shippingDate": "YYYY-MM-DD // 船期",
-  "level": "String // AQL抽样水平 (默认 Level II,还有Level I、Level II、Level III、Fixed Sample Size、Level I per item、Level II per item、Level III per item、S-1 per item、S-2 per item、S-3 per item、S-4 per item、双重抽样方案、多重抽样方案、S4、S3、S2、S1)",
-  "critical": "String // 致命缺陷标准 (默认 0/Not Allowed,枚举值Not Allowed、0.065、0.10、0.15、0.25、0.40、0.65、1.0、1.5、2.5、4.0、6.5、10、15)",
-  "major": "String // 主要缺陷标准 (默认 2.5,枚举值Not Allowed、0.065、0.10、0.15、0.25、0.40、0.65、1.0、1.5、2.5、4.0、6.5、10、15)",
-  "minor": "String // 次要缺陷标准 (默认 4.0,枚举值Not Allowed、0.065、0.10、0.15、0.25、0.40、0.65、1.0、1.5、2.5、4.0、6.5、10、15)",
-  "specialOtherComments": [
-    {
-      "Text": "String // 英文原文，例如 'Drop test required on master carton'",
-      "TextChs": "String // 中文总结，例如 '外箱需进行跌落测试'"
-    }
-  ],
-  "supplierName": "String // 供应商英文全称",
-  "supplierNameCn": "String // 供应商中文名 (如有)",
-  "supplierCountry": "String // 国家",
-  "supplierProvince": "String // 省 (国内转中文)",
-  "supplierCity": "String // 市 (国内转中文)",
-  "supplierDistrict": "String // 区 (国内转中文)",
-  "supplierAddress": "String // 详细地址",
-  "supplierContacts": [
-    {
-      "name": "String // 联系人姓名",
-      "tel": "String // 电话",
-      "mobile": "String // 手机",
-      "email": "String // 邮箱"
-    }
-  ],
-  "supplierMainProduct": ["String // 见规则1中的列表"，如果这些分类都没有找到，自定义构造一个符合规范的分类名]
-}
 """
 
 
 
-# -----------------------------
-# 2. 创建 Agent
-# -----------------------------
+
+# ---------------------------------------------------------------------------
+# 3. 创建一次性 Agent（使用临时 Knowledge）
+# ---------------------------------------------------------------------------
+
+agent_db = SqliteDb(db_file="tmp/qcdiy_po.db")
+
+def create_temp_agent():
+    collection_name = f"tmp_po_{uuid.uuid4().hex}"
 
 
-inspection_agent = Agent(
-    name="PO Analysis Agent",
-    model=DashScope(
-        id=OPENROUTER_CHAT_MODEL,
+    embedder = OpenAIEmbedder(
+        id=OPENROUTER_EMBEDDING_MODEL,
         api_key=OPENROUTER_API_KEY,
         base_url=OPENROUTER_BASE_URL
-    ),
-    instructions=instructions,
-    search_knowledge=True,
-    db=agent_db,
-    add_datetime_to_context=True,
-    add_history_to_context=True,
-    num_history_runs=5,
-    markdown=False,  
-    input_schema=InspectionJobInput, 
-    output_schema=InspectionExtractionResult
-)
-
-# -----------------------------
-# 3. 调用函数
-# -----------------------------
-def run_inspection_job(job: InspectionJobInput):
-    # 文件和图片对象
-    files = [
-        File(
-            url=d.url,
-            mime_type=d.mime_type,
-            filename=d.logical_name
-        ) for d in job.documents
-    ]
-    
-    images = [Image(url=i.url) for i in job.images]
-
-    # 生成元信息摘要，用于 prompt
-    doc_meta_text = "\n".join(
-        [f"- docType={d.doc_type}, logicalName={d.logical_name or d.url}, url={d.url}"
-         for d in job.documents]
     )
 
-    prompt = f"""
-任务ID: {job.job_id}
+    vector_db = ChromaDb(
+        collection=collection_name,
+        embedder=embedder,
+        persistent_client=False  # 临时，不落盘
+    )
+    knowledge = Knowledge(
+        vector_db=vector_db,
 
+    )
+
+    agent = Agent(
+        name="PO Analysis Agent",
+        model=DashScope(
+            id=OPENROUTER_CHAT_MODEL,
+            api_key=OPENROUTER_API_KEY,
+            base_url=OPENROUTER_BASE_URL
+        ),
+        instructions=instructions,
+        knowledge=knowledge,
+        search_knowledge=True,
+        db=agent_db,
+        add_datetime_to_context=True,
+        add_history_to_context=False,
+        markdown=False,
+        input_schema=InspectionJobInput,
+        output_schema= InspectionJobOutput
+    )
+    return agent, knowledge
+
+# ---------------------------------------------------------------------------
+# 4. run 方法：先入库，再调用 Agent
+# ---------------------------------------------------------------------------
+def get_reader(knowledge: Knowledge, uri: str):
+    uri_lower = uri.lower()
+    if uri_lower.endswith(".pdf"):
+        return knowledge.pdf_reader
+    elif uri_lower.endswith(".csv"):
+        return knowledge.csv_reader
+    elif uri_lower.endswith(".docx"):
+        return knowledge.docx_reader
+    elif uri_lower.endswith(".pptx"):
+        return knowledge.pptx_reader
+    elif uri_lower.endswith(".json"):
+        return knowledge.json_reader
+    elif uri_lower.endswith(".markdown"):
+        return knowledge.markdown_reader
+    elif uri_lower.endswith(".xlsx") or uri_lower.endswith(".xls"):
+        return knowledge.excel_reader
+    else:
+        return knowledge.text_reader
+
+
+
+def run_po_analysis(job: InspectionJobInput):
+    # 创建临时 Agent + Knowledge
+    agent_po_analysis, knowledge = create_temp_agent()
+    # 1️⃣ 收集文件和 reader
+    for d in job.documents:
+        reader= get_reader(knowledge, d.url)
+        knowledge.docx_reader
+        knowledge.insert(
+            url=d.url,
+            reader=reader,
+            metadata={
+                "doc_type": d.doc_type,
+                "logical_name": d.logical_name
+            }
+        )
+
+    
+    images = [Image(url=i.url) for i in job.images]
+    # 2️⃣ 构造 prompt
+    doc_meta_text = "\n".join(
+        [f"- docType={d.doc_type}, logicalName={d.logical_name or d.url}" for d in job.documents]
+    )
+
+    prompt = job.prompt + "\n" + f"""
 文件元信息:
 {doc_meta_text}
 
-请基于上传的文件和图片执行抽取任务，严格输出 JSON。
+请基于知识库中的内容执行抽取任务，严格输出 JSON。
 """
 
-    # 调用 Agent
-    response = inspection_agent.run(
+    # 3️⃣ 执行
+    response = agent_po_analysis.run(
         input=job,
-        files=files,
-        images=images,
+        prompt=prompt,
+        images=images
     )
+    print(response.content)
+
     return response
 
 # -----------------------------
@@ -292,10 +253,10 @@ if __name__ == "__main__":
         images=[
             ImageRef(
                 url="https://storage.example.com/temp/imgA",
-                usage="product"
+                doc_type="SC"
             )
         ]
     )
 
-    result = run_inspection_job(job_input)
+    result = run_po_analysis(job_input)
     print(result)

@@ -3,10 +3,15 @@ from fastapi import Request
 from fastapi.responses import JSONResponse
 from pathlib import Path
 from agno.os import AgentOS
-from agent_po_analysis import agent_po_analysis
-from agent_po_analysis import run_inspection_job
+from pydantic import BaseModel
+from agent_po_analysis import InspectionJobInput
+from agent_po_analysis import run_po_analysis
+from agent_product_info import run_product_extraction
 from agent_support import agent_support
+from agno.utils.log import set_log_level_to_debug
+import traceback
 
+from model import ApiResponse
 
 # ---------------------------------------------------------------------------
 # AgentOS Config
@@ -19,7 +24,7 @@ config_path = str(Path(__file__).parent.joinpath("config.yaml"))
 agent_os = AgentOS(
     id="Quick Start AgentOS",
     agents=[
-         agent_support,agent_po_analysis,
+         agent_support,
     ],
     config=config_path,
     tracing=True,
@@ -27,32 +32,41 @@ agent_os = AgentOS(
 app = agent_os.get_app()
 
 # ---------------------------------------------------------------------------
-# API：自定义接口（给 C# 用）
+# API：自定义接口
 # ---------------------------------------------------------------------------
+class RequestBody(BaseModel):
+    input: InspectionJobInput
+    stream: bool
+    user_id: str
 
-@app.post("/inspection/run")
-async def run_inspection(request: Request):
+@app.post("/agent_po_analysis/run")
+async def run_agent_po_analysis(payload: RequestBody):  # <- Pydantic 模型
     try:
-        payload = await request.json()
-
-        result = run_inspection_job(payload)
+        # payload 已经是 RequestBody 对象
+        print("payload:", payload)
+        print("documents:", payload.input.documents)  # 可以直接访问
+        print("images:", payload.input.images)
+        print("user_id:", payload.user_id)
 
         # 尝试解析 JSON（推荐）
-        try:
-            data = json.loads(result.content)
-        except Exception:
-            data = result.content
+        result = run_po_analysis(payload.input)
+        result2 = run_product_extraction(payload.input)
 
-        return JSONResponse(
-            content={
-                "success": True,
-                "data": data
-            }
+
+        data =result.content
+        productInfo = result2.content
+
+        return ApiResponse(
+            success=True,
+            data=data,
+            productInfo=productInfo
         )
 
     except Exception as e:
+        print(f"\nTest failed: {e}")
+        traceback.print_exc()
         return JSONResponse(
-            status_code=500,
+            status_code=200,
             content={
                 "success": False,
                 "error": str(e)
@@ -62,4 +76,5 @@ async def run_inspection(request: Request):
 # Run AgentOS
 # ---------------------------------------------------------------------------
 if __name__ == "__main__":
+    set_log_level_to_debug()
     agent_os.serve(app="run:app", reload=True)
