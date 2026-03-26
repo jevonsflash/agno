@@ -1,9 +1,15 @@
 # -----------------------------
 # 定义结构化输入 schema
 # -----------------------------
-from typing import List, Literal, Optional
+import os
+from typing import Dict, List, Literal, Optional
+import uuid
 
 from pydantic import BaseModel, Field
+from agno.knowledge.knowledge import Knowledge
+import urllib
+from agno.utils.media import download_file
+from agno.knowledge.reader.reader_factory import ReaderFactory
 
 
 
@@ -89,3 +95,88 @@ class ApiResponse(BaseModel):
     success: bool
     data: InspectionJobOutput
     productInfo: ProductInfoOutput
+
+
+
+def get_reader(document: DocumentRef):
+    reader = ReaderFactory.get_reader_for_extension(document.url)  
+    return reader if reader else ReaderFactory.get_reader_for_extension(document.mime_type)
+
+
+import urllib.parse
+import os
+import uuid
+from typing import Optional
+
+def guess_file_name(url: str, mime_type: Optional[str] = None) -> str:
+    # 尝试从 url path 获取文件名
+    path = urllib.parse.urlparse(url).path
+    name = os.path.basename(path)
+    
+    if name:
+        file_name, file_ext = os.path.splitext(name)
+        if not file_ext:
+            ext = ".txt"
+            if mime_type:
+                mime_lower = mime_type.lower()
+                if "pdf" in mime_lower:
+                    ext = ".pdf"
+                elif "spreadsheet" in mime_lower or "excel" in mime_lower:
+                    ext = ".xlsx"
+                elif "csv" in mime_lower or "comma-separated-values" in mime_lower:
+                    ext = ".csv"
+                elif "word" in mime_lower or "document" in mime_lower:
+                    ext = ".docx"
+            name = f"{file_name}{ext}"
+        return name
+    
+    # fallback
+    ext = ".txt"
+    if mime_type:
+        mime_lower = mime_type.lower()
+        if "pdf" in mime_lower:
+            ext = ".pdf"
+        elif "spreadsheet" in mime_lower or "excel" in mime_lower:
+            ext = ".xlsx"
+        elif "csv" in mime_lower or "comma-separated-values" in mime_lower:
+            ext = ".csv"
+        elif "word" in mime_lower or "document" in mime_lower:
+            ext = ".docx"
+    
+    return f"download_{uuid.uuid4().hex}{ext}"
+
+downloaded_files: List[DocumentRef] = []
+
+
+def add_document(doc: DocumentRef, tmp_dir: str = "tmp") -> DocumentRef:
+    """
+    下载 doc.url 到本地并加入全局缓存
+    如果已下载则返回已存在的 DocumentRef
+    """
+    # 检查是否已下载过
+    for f in downloaded_files:
+        if f.url == doc.url:
+            return f
+
+    # 确定本地文件名
+    file_name = guess_file_name(doc.url, doc.mime_type)
+    local_path = os.path.join(tmp_dir, file_name)
+    os.makedirs(tmp_dir, exist_ok=True)
+
+    # 调用外部库下载
+    download_file(doc.url, local_path)
+
+    # 创建新的 DocumentRef，path 赋值给 logical_name 或新增属性
+    downloaded_doc = DocumentRef(
+        url=local_path,           # 使用本地路径
+        mime_type=doc.mime_type,
+        logical_name=doc.logical_name,
+        doc_type=doc.doc_type
+    )
+
+    # 添加到缓存
+    downloaded_files.append(downloaded_doc)
+    return downloaded_doc
+
+def get_downloaded_files() -> List[DocumentRef]:
+    return downloaded_files

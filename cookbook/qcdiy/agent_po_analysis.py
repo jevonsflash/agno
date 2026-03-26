@@ -1,37 +1,34 @@
-from typing import List, Literal, Optional
-import uuid
-from pydantic import BaseModel, Field
+from typing import List
 import os
 
 from agno.agent import Agent
-from agno.media import File, Image
-from agno.models.openai.responses import OpenAIResponses
+from agno.media import Image
 from agno.db.sqlite import SqliteDb
-from agno.knowledge.embedder.openai import OpenAIEmbedder
-from agno.knowledge.knowledge import Knowledge
-from agno.models.openrouter import OpenRouter
-from agno.vectordb.chroma import ChromaDb
-from agno.vectordb.search import SearchType
-from agno.knowledge.embedder.google import GeminiEmbedder
-from agno.utils.log import set_log_level_to_debug
 from agno.models.dashscope import DashScope
-from agno.knowledge.knowledge import Knowledge
-from model import DocumentRef, ImageRef, InspectionJobInput,InspectionJobOutput
-# ---------------------------------------------------------------------------
-# OpenRouter and Knowledge Source Config
-# ---------------------------------------------------------------------------
-OPENROUTER_API_KEY = os.getenv(
-	"DASHSCOPE_API_KEY"
+
+from agno.utils.string import parse_response_model_str
+
+from model import (
+    DocumentRef,
+    ImageRef,
+    InspectionJobInput,
+    InspectionJobOutput,
+    get_reader,
+    get_downloaded_files,
+    add_document,
 )
+
+# ---------------------------------------------------------------------------
+# 基础配置
+# ---------------------------------------------------------------------------
+OPENROUTER_API_KEY = os.getenv("DASHSCOPE_API_KEY")
 OPENROUTER_BASE_URL = "https://dashscope.aliyuncs.com/compatible-mode/v1"
 OPENROUTER_CHAT_MODEL = "qwen-plus"
-OPENROUTER_EMBEDDING_MODEL = "text-embedding-v4"
 
-
-agent_db = SqliteDb(db_file="tmp/qcdiy_po_analysis.db")
+agent_db = SqliteDb(db_file="tmp/qcdiy_po.db")
 
 # ---------------------------------------------------------------------------
-# Agent Instructions
+# Agent Instructions（保留你的原始规则）
 # ---------------------------------------------------------------------------
 instructions = """\
 # Role & Objective
@@ -122,31 +119,9 @@ instructions = """\
 
 
 # ---------------------------------------------------------------------------
-# 3. 创建一次性 Agent（使用临时 Knowledge）
+# ✅ 创建“无知识库 Agent”
 # ---------------------------------------------------------------------------
-
-agent_db = SqliteDb(db_file="tmp/qcdiy_po.db")
-
-def create_temp_agent():
-    collection_name = f"tmp_po_{uuid.uuid4().hex}"
-
-
-    embedder = OpenAIEmbedder(
-        id=OPENROUTER_EMBEDDING_MODEL,
-        api_key=OPENROUTER_API_KEY,
-        base_url=OPENROUTER_BASE_URL
-    )
-
-    vector_db = ChromaDb(
-        collection=collection_name,
-        embedder=embedder,
-        persistent_client=False  # 临时，不落盘
-    )
-    knowledge = Knowledge(
-        vector_db=vector_db,
-
-    )
-
+def create_agent():
     agent = Agent(
         name="PO Analysis Agent",
         model=DashScope(
@@ -155,84 +130,81 @@ def create_temp_agent():
             base_url=OPENROUTER_BASE_URL
         ),
         instructions=instructions,
-        knowledge=knowledge,
-        search_knowledge=True,
         db=agent_db,
         add_datetime_to_context=True,
         add_history_to_context=False,
         markdown=False,
         input_schema=InspectionJobInput,
-        output_schema= InspectionJobOutput
     )
-    return agent, knowledge
+    return agent
 
 # ---------------------------------------------------------------------------
-# 4. run 方法：先入库，再调用 Agent
+# ✅ 核心：读取文档内容（不进知识库）
 # ---------------------------------------------------------------------------
-def get_reader(knowledge: Knowledge, uri: str):
-    uri_lower = uri.lower()
-    if uri_lower.endswith(".pdf"):
-        return knowledge.pdf_reader
-    elif uri_lower.endswith(".csv"):
-        return knowledge.csv_reader
-    elif uri_lower.endswith(".docx"):
-        return knowledge.docx_reader
-    elif uri_lower.endswith(".pptx"):
-        return knowledge.pptx_reader
-    elif uri_lower.endswith(".json"):
-        return knowledge.json_reader
-    elif uri_lower.endswith(".markdown"):
-        return knowledge.markdown_reader
-    elif uri_lower.endswith(".xlsx") or uri_lower.endswith(".xls"):
-        return knowledge.excel_reader
-    else:
-        return knowledge.text_reader
+def load_documents_as_text(job: InspectionJobInput) -> str:
+    text_blocks = []
 
-
-
-def run_po_analysis(job: InspectionJobInput):
-    # 创建临时 Agent + Knowledge
-    agent_po_analysis, knowledge = create_temp_agent()
-    # 1️⃣ 收集文件和 reader
+    # 下载文档
     for d in job.documents:
-        reader= get_reader(knowledge, d.url)
-        knowledge.docx_reader
-        knowledge.insert(
-            url=d.url,
-            reader=reader,
-            metadata={
-                "doc_type": d.doc_type,
-                "logical_name": d.logical_name
-            }
-        )
+        add_document(d)
 
-    
+    for f in get_downloaded_files():
+        reader = get_reader(f)  
+
+        try:
+            docs = reader.read(f.url)  # 通常返回 Document list
+            for doc in docs:
+                content = doc.content if hasattr(doc, "content") else str(doc)
+                text_blocks.append(
+                    f"\n\n===== 文档: {f.logical_name} ({f.doc_type}) =====\n{content}\n"
+                )
+        except Exception as e:
+            text_blocks.append(f"\n[文档解析失败: {f.logical_name}]")
+
+    return "\n".join(text_blocks)
+
+# ---------------------------------------------------------------------------
+# ✅ 主执行逻辑（无知识库版）
+# ---------------------------------------------------------------------------
+def run_po_analysis(job: InspectionJobInput):
+    agent = create_agent()
+
+    # 1️⃣ 读取所有文档文本
+    document_text = load_documents_as_text(job)
+
+    # 2️⃣ 图片
     images = [Image(url=i.url) for i in job.images]
-    # 2️⃣ 构造 prompt
-    doc_meta_text = "\n".join(
-        [f"- docType={d.doc_type}, logicalName={d.logical_name or d.url}" for d in job.documents]
-    )
 
-    prompt = job.prompt + "\n" + f"""
-文件元信息:
-{doc_meta_text}
+    # 3️⃣ 构造 Prompt（关键）
+    prompt = f"""
+以下是用户上传的订单/合同/发票等文件内容，请基于这些内容进行分析：
 
-请基于知识库中的内容执行抽取任务，严格输出 JSON。
+{document_text}
+
+---
+请严格按照JSON结构输出产品信息，不要输出多余内容。
 """
 
-    # 3️⃣ 执行
-    response = agent_po_analysis.run(
+    # 4️⃣ 执行
+    response = agent.run(
         input=job,
         prompt=prompt,
         images=images
     )
+
     print(response.content)
 
-    return response.content
+    po_info_output = parse_response_model_str(
+        response.content,
+        InspectionJobOutput
+    )
 
-# -----------------------------
-# 4. 使用示例
-# -----------------------------
+    return po_info_output
+
+
+# ---------------------------------------------------------------------------
+# 示例
+# ---------------------------------------------------------------------------
 if __name__ == "__main__":
     job_input = InspectionJobInput(
         job_id="JOB-20260319-001",
