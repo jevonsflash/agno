@@ -1,3 +1,4 @@
+from pathlib import Path
 from typing import List
 import os
 
@@ -97,6 +98,7 @@ Customer Code > Item > SKU
 # 4. 创建 Agent
 # ---------------------------------------------------------------------------
 def create_product_agent():
+    print("[INFO] Creating Product Info Agent...")
     agent = Agent(
         name="Product Info Agent",
         model=DashScope(
@@ -106,9 +108,9 @@ def create_product_agent():
         ),
         instructions=instructions,
         db=agent_db,
-        markdown=False,
-        input_schema=InspectionJobInput,
+        markdown=False
     )
+    print("[INFO] Agent created successfully.")
     return agent
 
 # ---------------------------------------------------------------------------
@@ -118,73 +120,80 @@ def load_documents_as_text(job: InspectionJobInput) -> str:
     text_blocks = []
 
     # 下载文档
+    print(f"[INFO] Adding {len(job.documents)} documents for download...")
     for d in job.documents:
+        print(f"[INFO] Adding document: {d.url}")
         add_document(d)
 
-    for f in get_downloaded_files():
-        reader = get_reader(f)  
+    downloaded_files = get_downloaded_files()
+    print(f"[INFO] Total downloaded files: {len(downloaded_files)}")
+
+    for f in downloaded_files:
+        print(f"[INFO] Getting reader for: {f.url}")
+        reader = get_reader(f)
+        if reader:
+            print(f"[INFO] Using reader: {reader.name}")
+        else:
+            print(f"[INFO] No reader found for: {f.url}")
+            continue
 
         try:
-            docs = reader.read(f.url)  # 通常返回 Document list
+            docs = reader.read(Path(f.url))  # 通常返回 Document list
+            print(f"[INFO] Read {len(docs)} documents from {f.url}")
             for doc in docs:
                 content = doc.content if hasattr(doc, "content") else str(doc)
                 text_blocks.append(
                     f"\n\n===== 文档: {f.logical_name} ({f.doc_type}) =====\n{content}\n"
                 )
         except Exception as e:
+            print(f"[INFO] Exception while reading {f.logical_name}: {e}")
             text_blocks.append(f"\n[文档解析失败: {f.logical_name}]")
 
+    print(f"[INFO] Total text blocks collected: {len(text_blocks)}")
     return "\n".join(text_blocks)
 
 # ---------------------------------------------------------------------------
 # 6. Run 方法
 # ---------------------------------------------------------------------------
 def run_product_extraction(job: InspectionJobInput):
+    print("[INFO] Starting product extraction job...")
     agent = create_product_agent()
 
     # 1️⃣ 文档 → 文本
     document_text = load_documents_as_text(job)
+    print(f"[INFO] Document text length: {len(document_text)} characters")
 
     # 2️⃣ 图片
     images = [Image(url=i.url) for i in job.images]
+    print(f"[INFO] Number of images: {len(images)}")
 
-    # 3️⃣ Prompt（重点优化：强化“产品行提取”）
+    # 3️⃣ Prompt
     prompt = f"""
-以下是订单文档内容，请完成产品信息提取任务：
-
-{document_text}
-
----
-重点要求：
-1. 必须识别所有产品行（通常为表格）
-2. 每一行生成一个 productInfo
-3. 不要遗漏任何产品
-4. 数量必须来自订单列（不是包装信息）
-
-请严格输出 JSON，不要解释。
+请完成产品信息提取任务，请严格输出 JSON，不要解释。
 """
+    print(f"[INFO] Prompt prepared (length: {len(prompt)} characters)")
 
     # 4️⃣ 执行
     response = agent.run(
-        input=job,
+        input=document_text,
         prompt=prompt,
         images=images
     )
-
-    print(response.content)
+    print(f"[INFO] Response: {response.content}")
 
     product_info_output = parse_response_model_str(
         response.content,
         ProductInfoOutput
     )
+    print("[INFO] Parsed response into ProductInfoOutput")
 
     return product_info_output
-
 
 # ---------------------------------------------------------------------------
 # 示例
 # ---------------------------------------------------------------------------
 if __name__ == "__main__":
+    print("[INFO] Running example extraction job...")
     job = InspectionJobInput(
         documents=[
             DocumentRef(
@@ -195,4 +204,5 @@ if __name__ == "__main__":
     )
 
     result = run_product_extraction(job)
+    print("[INFO] Extraction result:")
     print(result)

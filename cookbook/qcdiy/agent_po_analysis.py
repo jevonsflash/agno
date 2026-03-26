@@ -1,3 +1,4 @@
+from pathlib import Path
 from typing import List
 import os
 
@@ -5,6 +6,7 @@ from agno.agent import Agent
 from agno.media import Image
 from agno.db.sqlite import SqliteDb
 from agno.models.dashscope import DashScope
+from agno.knowledge.reader.pdf_reader import PDFReader
 
 from agno.utils.string import parse_response_model_str
 
@@ -28,7 +30,7 @@ OPENROUTER_CHAT_MODEL = "qwen-plus"
 agent_db = SqliteDb(db_file="tmp/qcdiy_po.db")
 
 # ---------------------------------------------------------------------------
-# Agent Instructions（保留你的原始规则）
+# Agent Instructions（保持不变）
 # ---------------------------------------------------------------------------
 instructions = """\
 # Role & Objective
@@ -109,6 +111,51 @@ instructions = """\
 2.  **空值**: 如果在文中完全找不到对应信息，且无法根据逻辑推断，请填为空字符串 `""` 或空数组 `[]`，不要填 "N/A" 或 "Unknown"。
 3.  **语言**: `ClientName` 和 `SupplierName` 优先保留文档中的英文原名。`Province/City` 如果在中国，请转换为中文；如果是国外，保留英文。
 
+# JSON Output Structure
+必须输出：
+{
+  "clientName": "String // 客户名称（英文优先）",
+  "factoryName": "String // 工厂名称（如果与Supplier不同，否则填SupplierName）",
+  "productCateName": "String // 产品大类，如 Furniture, Electronics",
+  "startDate": "YYYY-MM-DD // 检验开始日期（默认船期前5天）",
+  "endDate": "YYYY-MM-DD // 检验结束日期（默认船期前5天）",
+  "productNameChs": "String // 产品中文名（需翻译，如 'Coffee Table' -> '咖啡桌'）",
+  "poductUses": ["String // 枚举: 不适用, 婴幼儿产品, 食品接触, 其他"],
+  "productPowerSupply": ["String // 枚举: 否, 带干电池, 带充电电池, USB供电, 无线充电, 市电供电, 带适配器"],
+  "productConnectionType": ["String // 枚举: 不适用, 蓝牙, WIFI, 带APP, 其他"],
+  "productMaterials": ["String // 枚举: 金属, 木材, 塑料, 玻璃, 纺织品, 陶瓷, 搪瓷, 石材, 橡胶, 纸张, 其他"],
+  "productIsMailOrder": Boolean,
+  "shippingDestinationName": "String // 目的国 (如 Germany, USA)",
+  "shippingDate": "YYYY-MM-DD // 船期",
+  "level": "String // AQL抽样水平 (默认 Level II,还有Level I、Level II、Level III、Fixed Sample Size、Level I per item、Level II per item、Level III per item、S-1 per item、S-2 per item、S-3 per item、S-4 per item、双重抽样方案、多重抽样方案、S4、S3、S2、S1)",
+  "critical": "String // 致命缺陷标准 (默认 0/Not Allowed,枚举值Not Allowed、0.065、0.10、0.15、0.25、0.40、0.65、1.0、1.5、2.5、4.0、6.5、10、15)",
+  "major": "String // 主要缺陷标准 (默认 2.5,枚举值Not Allowed、0.065、0.10、0.15、0.25、0.40、0.65、1.0、1.5、2.5、4.0、6.5、10、15)",
+  "minor": "String // 次要缺陷标准 (默认 4.0,枚举值Not Allowed、0.065、0.10、0.15、0.25、0.40、0.65、1.0、1.5、2.5、4.0、6.5、10、15)",
+  "specialOtherComments": [
+    {
+      "text": "String // 英文原文，例如 'Drop test required on master carton'",
+      "textChs": "String // 中文总结，例如 '外箱需进行跌落测试'"
+    }
+  ],
+  "supplierName": "String // 供应商英文全称",
+  "supplierNameCn": "String // 供应商中文名 (如有)",
+  "supplierCountry": "String // 国家",
+  "supplierProvince": "String // 省 (国内转中文)",
+  "supplierCity": "String // 市 (国内转中文)",
+  "supplierDistrict": "String // 区 (国内转中文)",
+  "supplierAddress": "String // 详细地址",
+  "supplierContacts": [
+    {
+      "name": "String // 联系人姓名",
+      "tel": "String // 电话",
+      "mobile": "String // 手机",
+      "email": "String // 邮箱"
+    }
+  ],
+  "supplierMainProduct": ["String // 见规则1中的列表"，如果这些分类都没有找到，自定义构造一个符合规范的分类名]
+}
+
+
 # Extra Instructions for Multimodal Inputs
 - 你可能会同时收到多个 PDF、DOCX、CSV 以及多张图片
 - 请先综合所有输入源，再输出一个统一结果
@@ -119,9 +166,10 @@ instructions = """\
 
 
 # ---------------------------------------------------------------------------
-# ✅ 创建“无知识库 Agent”
+# 创建 Agent
 # ---------------------------------------------------------------------------
 def create_agent():
+    print("[INFO] Creating Agent...")
     agent = Agent(
         name="PO Analysis Agent",
         model=DashScope(
@@ -133,74 +181,91 @@ def create_agent():
         db=agent_db,
         add_datetime_to_context=True,
         add_history_to_context=False,
-        markdown=False,
-        input_schema=InspectionJobInput,
+        markdown=False
     )
+    print("[INFO] Agent created successfully")
     return agent
 
 # ---------------------------------------------------------------------------
-# ✅ 核心：读取文档内容（不进知识库）
+# 读取文档内容
 # ---------------------------------------------------------------------------
 def load_documents_as_text(job: InspectionJobInput) -> str:
+    print(f"[INFO] Loading {len(job.documents)} documents...")
     text_blocks = []
 
     # 下载文档
     for d in job.documents:
+        print(f"[INFO] Adding document: {d.logical_name} ({d.doc_type})")
         add_document(d)
 
-    for f in get_downloaded_files():
-        reader = get_reader(f)  
+    downloaded_files = get_downloaded_files()
+    print(f"[INFO] Total downloaded files: {len(downloaded_files)}")
 
-        try:
-            docs = reader.read(f.url)  # 通常返回 Document list
-            for doc in docs:
+    for f in downloaded_files:
+        print(f"[INFO] Reading file: {f.logical_name} ({f.doc_type}) from {f.url}")
+        reader = get_reader(f)  
+        try:         
+            docs = reader.read(Path(f.url))  # 通常返回 Document list
+            print(f"[INFO] Number of document segments read: {len(docs)}")
+            for idx, doc in enumerate(docs):
                 content = doc.content if hasattr(doc, "content") else str(doc)
                 text_blocks.append(
-                    f"\n\n===== 文档: {f.logical_name} ({f.doc_type}) =====\n{content}\n"
+                    f"\n\n===== 文档: {f.logical_name} ({f.doc_type}) | 段 {idx+1} =====\n{content}\n"
                 )
         except Exception as e:
-            text_blocks.append(f"\n[文档解析失败: {f.logical_name}]")
+            print(f"[ERROR] Failed to read {f.logical_name}: {e}")
+            text_blocks.append(f"\n[文档解析失败: {f.logical_name}]\n")
 
+    print(f"[INFO] Completed reading documents. Total text blocks: {len(text_blocks)}")
     return "\n".join(text_blocks)
 
 # ---------------------------------------------------------------------------
-# ✅ 主执行逻辑（无知识库版）
+# 主执行逻辑
 # ---------------------------------------------------------------------------
 def run_po_analysis(job: InspectionJobInput):
+    print(f"[INFO] Running PO analysis")
     agent = create_agent()
 
-    # 1️⃣ 读取所有文档文本
+    # 1️⃣ 读取文档
     document_text = load_documents_as_text(job)
+    print(f"[INFO] Document text length: {len(document_text)} characters")
 
     # 2️⃣ 图片
     images = [Image(url=i.url) for i in job.images]
+    print(f"[INFO] Total images to process: {len(images)}")
 
-    # 3️⃣ 构造 Prompt（关键）
+    # 3️⃣ 构造 Prompt
     prompt = f"""
-以下是用户上传的订单/合同/发票等文件内容，请基于这些内容进行分析：
-
-{document_text}
-
----
-请严格按照JSON结构输出产品信息，不要输出多余内容。
+请完成检验信息提取任务，请严格输出 JSON，不要解释。
 """
+    print("[INFO] Prompt constructed successfully")
+    print(f"[INFO] Prompt preview: {prompt}")
 
     # 4️⃣ 执行
-    response = agent.run(
-        input=job,
-        prompt=prompt,
-        images=images
-    )
+    try:
+        response = agent.run(
+            input=document_text,
+            prompt=prompt,
+            images=images
+        )
+        print("[INFO] Agent run completed")
+        print(f"[INFO] Response: {response.content}")
+    except Exception as e:
+        print(f"[ERROR] Agent run failed: {e}")
+        raise e
 
-    print(response.content)
-
-    po_info_output = parse_response_model_str(
-        response.content,
-        InspectionJobOutput
-    )
+    # 5️⃣ 解析结果
+    try:
+        po_info_output = parse_response_model_str(
+            response.content,
+            InspectionJobOutput
+        )
+        print("[INFO] Parsed output successfully")
+    except Exception as e:
+        print(f"[ERROR] Failed to parse output: {e}")
+        raise e
 
     return po_info_output
-
 
 # ---------------------------------------------------------------------------
 # 示例
@@ -230,5 +295,7 @@ if __name__ == "__main__":
         ]
     )
 
+    print("[INFO] Starting PO analysis example run...")
     result = run_po_analysis(job_input)
+    print("[INFO] PO analysis example run completed")
     print(result)

@@ -2,6 +2,7 @@
 # 定义结构化输入 schema
 # -----------------------------
 import os
+from pathlib import Path
 from typing import Dict, List, Literal, Optional
 import uuid
 
@@ -99,8 +100,16 @@ class ApiResponse(BaseModel):
 
 
 def get_reader(document: DocumentRef):
-    reader = ReaderFactory.get_reader_for_extension(document.url)  
-    return reader if reader else ReaderFactory.get_reader_for_extension(document.mime_type)
+    path = Path(document.url)
+    ext = path.suffix.lower()
+    reader = ReaderFactory.get_reader_for_extension(ext)  
+    if reader:
+        print(f"Using reader: {reader.name}")
+        return reader
+    else:
+        reader=ReaderFactory.get_reader_for_extension(document.mime_type)
+        print(f"Using reader: {reader.name}")
+        return reader
 
 
 import urllib.parse
