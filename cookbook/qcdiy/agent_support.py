@@ -1,41 +1,85 @@
-"""Support agent backed by OpenRouter and remote Markdown knowledge."""
+"""Support agent backed by DashScope and fixed Markdown knowledge."""
 
-import json
 import os
 from pathlib import Path
-from typing import Any, Dict, List
-from urllib.parse import quote, urlparse
-from urllib.request import Request, urlopen
+from typing import List
+from urllib.parse import urlparse
 
 from agno.agent import Agent
 from agno.db.sqlite import SqliteDb
 from agno.knowledge.embedder.openai import OpenAIEmbedder
 from agno.knowledge.knowledge import Knowledge
-from agno.models.openrouter import OpenRouter
+from agno.models.dashscope import DashScope
 from agno.vectordb.chroma import ChromaDb
 from agno.vectordb.search import SearchType
-from agno.knowledge.embedder.google import GeminiEmbedder
-from agno.utils.log import set_log_level_to_debug
-from agno.models.dashscope import DashScope
-
 from agno.utils.log import logger
+
 # ---------------------------------------------------------------------------
-# OpenRouter and Knowledge Source Config
+# Config
 # ---------------------------------------------------------------------------
-OPENROUTER_API_KEY = os.getenv(
-	"DASHSCOPE_API_KEY"
-)
+OPENROUTER_API_KEY = os.getenv("DASHSCOPE_API_KEY")
 OPENROUTER_BASE_URL = "https://dashscope.aliyuncs.com/compatible-mode/v1"
 OPENROUTER_CHAT_MODEL = "qwen-plus"
 OPENROUTER_EMBEDDING_MODEL = "text-embedding-v4"
 
-GITEE_OWNER = "jevonsflash"
-GITEE_REPO = "v-support"
-GITEE_BRANCH = "main"
-GITEE_KNOWLEDGE_ROOT = "src/assets/md"
-GITEE_TREE_URL = "https://gitee.com/jevonsflash/v-support/tree/main/src/assets/md"
-GITEE_CONTENTS_API = f"https://gitee.com/api/v5/repos/{GITEE_OWNER}/{GITEE_REPO}/contents"
-MARKDOWN_SUFFIXES = (".md", ".markdown", ".mdx")
+MARKDOWN_URLS = [
+    "https://support.qcdiy.com/md/dashboard-analysis.md",
+    "https://support.qcdiy.com/md/dashboard-workbench.md",
+
+    "https://support.qcdiy.com/md/domain-contact.md",
+    "https://support.qcdiy.com/md/domain-domainuser.md",
+    "https://support.qcdiy.com/md/domain-factory.md",
+    "https://support.qcdiy.com/md/domain-organization.md",
+    "https://support.qcdiy.com/md/domain-settings.md",
+
+    "https://support.qcdiy.com/md/grouped-questionnaire-config.md",
+    "https://support.qcdiy.com/md/home.md",
+
+    "https://support.qcdiy.com/md/library-defect.md",
+    "https://support.qcdiy.com/md/library-quesstionnairconfig.md", 
+    "https://support.qcdiy.com/md/library-questionnaire.md",
+    "https://support.qcdiy.com/md/library-questiontemplate.md",
+    "https://support.qcdiy.com/md/library-service.md",
+    "https://support.qcdiy.com/md/library-wi_config.md",
+    "https://support.qcdiy.com/md/library-workflow.md",
+    "https://support.qcdiy.com/md/library-workinstruction.md",
+
+    "https://support.qcdiy.com/md/report_simplify.md",
+
+    "https://support.qcdiy.com/md/system-data-enum.md",
+    "https://support.qcdiy.com/md/system-file.md",
+    "https://support.qcdiy.com/md/system-notification.md",
+    "https://support.qcdiy.com/md/system-order.md",
+    "https://support.qcdiy.com/md/system-role.md",
+    "https://support.qcdiy.com/md/system-user.md",
+    "https://support.qcdiy.com/md/system-userdetail.md",
+
+    "https://support.qcdiy.com/md/user-account.md",
+    "https://support.qcdiy.com/md/user-profile.md",
+
+    "https://support.qcdiy.com/md/valuerecord-value.md",
+
+    "https://support.qcdiy.com/md/version.md",
+
+    "https://support.qcdiy.com/md/work-groupedsurvey.md",
+    "https://support.qcdiy.com/md/work-inspection.md",
+    "https://support.qcdiy.com/md/work-inspectionsimplify.md",
+    "https://support.qcdiy.com/md/work-inspection_calendar.md",
+    "https://support.qcdiy.com/md/work-inspection_detail.md",
+
+    "https://support.qcdiy.com/md/work-purchaseorder.md",
+    "https://support.qcdiy.com/md/work-purchaseorder_detail.md",
+
+    "https://support.qcdiy.com/md/work-report.md",
+    "https://support.qcdiy.com/md/work-reportdetail.md",
+
+    "https://support.qcdiy.com/md/work-servicepackagesell.md",
+
+    "https://support.qcdiy.com/md/work-survey.md",
+    "https://support.qcdiy.com/md/work-survey_detail.md",
+
+    "https://support.qcdiy.com/md/workflow-detail.md",
+]
 
 # ---------------------------------------------------------------------------
 # Setup
@@ -43,106 +87,56 @@ MARKDOWN_SUFFIXES = (".md", ".markdown", ".mdx")
 agent_db = SqliteDb(db_file="tmp/qcdiy_support.db")
 
 knowledge = Knowledge(
-	name="V-Support Markdown Docs",
-	vector_db=ChromaDb(
-		name="v_support_docs",
-		collection="v_support_docs",
-		path="tmp/chromadb",
-		persistent_client=True,
-		search_type=SearchType.hybrid,
-		hybrid_rrf_k=60,
-		embedder=OpenAIEmbedder(
-			id=OPENROUTER_EMBEDDING_MODEL,
-			api_key=OPENROUTER_API_KEY,
-			base_url=OPENROUTER_BASE_URL,
-			dimensions=1536,
-		),
-	),
-	max_results=5,
-	contents_db=agent_db,
+    name="V-Support Markdown Docs",
+    vector_db=ChromaDb(
+        name="v_support_docs",
+        collection="v_support_docs",
+        path="tmp/chromadb",
+        persistent_client=True,
+        search_type=SearchType.hybrid,
+        hybrid_rrf_k=60,
+        embedder=OpenAIEmbedder(
+            id=OPENROUTER_EMBEDDING_MODEL,
+            api_key=OPENROUTER_API_KEY,
+            base_url=OPENROUTER_BASE_URL,
+            dimensions=1536,
+        ),
+    ),
+    max_results=5,
+    contents_db=agent_db,
 )
 
-
 # ---------------------------------------------------------------------------
-# Utilities
+# Load Knowledge（核心替换点）
 # ---------------------------------------------------------------------------
-def _gitee_contents_url(path: str) -> str:
-	clean_path = path.strip("/")
-	encoded_path = quote(clean_path)
-	return f"{GITEE_CONTENTS_API}/{encoded_path}?ref={GITEE_BRANCH}"
-
-
-def _gitee_raw_url(path: str) -> str:
-	clean_path = path.strip("/")
-	return f"https://gitee.com/{GITEE_OWNER}/{GITEE_REPO}/raw/{GITEE_BRANCH}/{clean_path}"
-
-
-def _fetch_gitee_contents(path: str) -> List[Dict[str, Any]]:
-	url = _gitee_contents_url(path)
-	request = Request(url, headers={"User-Agent": "agno-qcdiy-support-agent/1.0"})
-	with urlopen(request, timeout=30) as response:
-		payload = json.loads(response.read().decode("utf-8"))
-
-	if isinstance(payload, dict):
-		return [payload]
-	if isinstance(payload, list):
-		return payload
-
-	raise ValueError(f"Unexpected Gitee API payload type for {path}: {type(payload)!r}")
-
-
-def get_markdown_urls_from_gitee(root_path: str = GITEE_KNOWLEDGE_ROOT) -> List[str]:
-	markdown_urls: List[str] = []
-	pending_dirs: List[str] = [root_path]
-	visited_dirs = set()
-
-	while pending_dirs:
-		current_dir = pending_dirs.pop()
-		if current_dir in visited_dirs:
-			continue
-		visited_dirs.add(current_dir)
-
-		for item in _fetch_gitee_contents(current_dir):
-			item_type = item.get("type")
-			item_path = str(item.get("path", ""))
-
-			if item_type == "dir":
-				pending_dirs.append(item_path)
-				continue
-
-			if item_type != "file":
-				continue
-
-			if not item_path.lower().endswith(MARKDOWN_SUFFIXES):
-				continue
-
-			download_url = str(item.get("download_url") or _gitee_raw_url(item_path))
-			markdown_urls.append(download_url)
-
-	return sorted(set(markdown_urls))
-
-
 def load_v_support_markdown_knowledge() -> List[str]:
-	markdown_urls = get_markdown_urls_from_gitee()
-	logger.info("markdown_urls", markdown_urls)
-	for md_url in markdown_urls:
-		file_name = Path(urlparse(md_url).path).name
-		knowledge.insert(
-			name=file_name,
-			url=md_url,
-			metadata={
-				"source": "gitee",
-				"repo": f"{GITEE_OWNER}/{GITEE_REPO}",
-				"root": GITEE_KNOWLEDGE_ROOT,
-			},
-			skip_if_exists=True,
-		)
+    loaded_urls = []
 
-	return markdown_urls
+    for md_url in MARKDOWN_URLS:
+        try:
+            file_name = Path(urlparse(md_url).path).name
+
+            knowledge.insert(
+                name=file_name,
+                url=md_url,
+                metadata={
+                    "source": "qcdiy-support",
+                    "type": "markdown",
+                },
+                skip_if_exists=True,
+            )
+
+            loaded_urls.append(md_url)
+
+        except Exception as e:
+            logger.error(f"Failed to load markdown: {md_url}, error: {e}")
+
+    logger.info(f"Loaded {len(loaded_urls)} markdown files from fixed URLs")
+    return loaded_urls
 
 
 # ---------------------------------------------------------------------------
-# Agent Instructions
+# Instructions
 # ---------------------------------------------------------------------------
 instructions = """\
 你是 V-Support 智能助手。
@@ -158,27 +152,28 @@ instructions = """\
 - 需要时给出步骤或示例。\
 """
 
-
 # ---------------------------------------------------------------------------
-# Create Agent
+# Agent
 # ---------------------------------------------------------------------------
 agent_support = Agent(
-	name="V-Support Agent",
-	model=DashScope(id=OPENROUTER_CHAT_MODEL, api_key=OPENROUTER_API_KEY,base_url=OPENROUTER_BASE_URL),
-	instructions=instructions,
-	knowledge=knowledge,
-	search_knowledge=True,
-	db=agent_db,
-	add_datetime_to_context=True,
-	add_history_to_context=True,
-	num_history_runs=5,
-	markdown=True,
+    name="V-Support Agent",
+    model=DashScope(
+        id=OPENROUTER_CHAT_MODEL,
+        api_key=OPENROUTER_API_KEY,
+        base_url=OPENROUTER_BASE_URL,
+    ),
+    instructions=instructions,
+    knowledge=knowledge,
+    search_knowledge=True,
+    db=agent_db,
+    add_datetime_to_context=True,
+    add_history_to_context=True,
+    num_history_runs=5,
+    markdown=True,
 )
 
 # ---------------------------------------------------------------------------
-# Run Agent
+# Run
 # ---------------------------------------------------------------------------
-
 loaded_urls = load_v_support_markdown_knowledge()
-logger.info(f"Loaded {len(loaded_urls)} markdown files from {GITEE_TREE_URL}")
-
+logger.info(f"Loaded {len(loaded_urls)} markdown files from qcdiy support")
